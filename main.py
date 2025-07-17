@@ -1,54 +1,104 @@
-from flask import Flask, request
-import requests
 import os
+import requests
+from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
 load_dotenv()
 
-app = Flask(__name__)
-
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-MODEL = "mistralai/mistral-7b-instruct"
 
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+BOT_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+
+app = Flask(__name__)
+
+HEADERS = {
+    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+    "Content-Type": "application/json"
+}
+
+def send_message(chat_id, text):
+    requests.post(f"{BOT_URL}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    })
+
+def send_photo(chat_id, photo_url, caption=None):
+    payload = {
+        "chat_id": chat_id,
+        "photo": photo_url,
+    }
+    if caption:
+        payload["caption"] = caption
+    requests.post(f"{BOT_URL}/sendPhoto", json=payload)
+
+def generate_text_reply(prompt):
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    body = {
+        "model": "gryphe/mythomist-7b",
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 500,
+        "temperature": 0.8,
+        "top_p": 0.9
+    }
+    response = requests.post(url, headers=HEADERS, json=body)
+    response.raise_for_status()
+    data = response.json()
+    return data["choices"][0]["message"]["content"]
+
+def generate_image(prompt):
+    url = "https://openrouter.ai/api/v1/image/generations"
+    body = {
+        "model": "revAnimated",
+        "prompt": prompt,
+        "negative_prompt": "blurry, low quality, watermark, text, cropped",
+        "width": 512,
+        "height": 768,
+        "samples": 1,
+        "steps": 30,
+        "cfg_scale": 7.5
+    }
+    response = requests.post(url, headers=HEADERS, json=body)
+    response.raise_for_status()
+    data = response.json()
+    # The response may include a list of image URLs under "artifacts"
+    return data["artifacts"][0]["url"]
 
 @app.route("/", methods=["POST"])
 def webhook():
     data = request.get_json()
-    print("Incoming:", data)
 
-    if "message" in data and "text" in data["message"]:
+    if "message" in data:
         chat_id = data["message"]["chat"]["id"]
-        user_message = data["message"]["text"]
+        text = data["message"].get("text", "").strip()
 
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "HTTP-Referer": "https://yourdomain.com",  # Replace if needed
-            "X-Title": "SpicyBot",
-            "Content-Type": "application/json"
-        }
+        if text.startswith("/image"):
+            prompt = text[len("/image"):].strip()
+            if not prompt:
+                send_message(chat_id, "Please provide a prompt after /image. Example:\n/image a sexy anime warrior")
+                return jsonify({"status": "ok"})
 
-        payload = {
-            "model": MODEL,
-            "messages": [
-                {"role": "system", "content": "You are a helpful and spicy Telegram assistant."},
-                {"role": "user", "content": user_message}
-            ]
-        }
+            send_message(chat_id, "🎨 Generating your NSFW image... please wait 20–40 seconds.")
 
-        try:
-            response = requests.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers)
-            response.raise_for_status()
-            ai_reply = response.json()["choices"][0]["message"]["content"]
+            try:
+                image_url = generate_image(prompt)
+                send_photo(chat_id, image_url, caption=f"Prompt: {prompt}")
+            except Exception as e:
+                send_message(chat_id, f"❌ Failed to generate image. Error: {str(e)}")
 
-            telegram_payload = {
-                "chat_id": chat_id,
-                "text": ai_reply
-            }
-            requests.post(TELEGRAM_API_URL, json=telegram_payload)
+        else:
+            try:
+                reply = generate_text_reply(text)
+                send_message(chat_id, reply)
+            except Exception as e:
+                send_message(chat_id, f"⚠️ Error generating reply: {str(e)}")
 
-        except requests.exceptions.RequestException as e:
-            print("Error:", e)
+    return jsonify({"status": "ok"})
 
-    return "OK", 200
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
