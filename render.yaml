@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: spicy-telegram-bot
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: gunicorn main:app
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        value: your-telegram-token-here
+      - key: OPENROUTER_API_KEY
+        value: your-openrouter-key-here
