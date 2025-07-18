@@ -1,139 +1,179 @@
-import os
 from flask import Flask, request, jsonify, redirect
-import stripe
-import requests
+import os, json, stripe, requests
 from dotenv import load_dotenv
+from telegram import Bot, Update
+from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters
+from io import BytesIO
 
 load_dotenv()
 
-# Load environment variables
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
-STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")
-
-# Updated Render service URL
-YOUR_RENDER_URL = "https://spicy-telegram-bot-5.onrender.com"
-BOT_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-
-# In-memory storage for user access (for production, use a database!)
-premium_users = set()
-
-# Setup Stripe API key
-stripe.api_key = STRIPE_SECRET_KEY
-
 app = Flask(__name__)
 
-def query_openrouter(prompt: str) -> str:
-    url = "https://openrouter.ai/api/v1/chat/completions"
+# ENV variables
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+BASE_URL = os.getenv("BASE_URL", "https://spicy-telegram-bot-5.onrender.com")
+
+# Stripe setup
+stripe.api_key = STRIPE_SECRET_KEY
+
+# Telegram bot setup
+bot = Bot(token=BOT_TOKEN)
+dispatcher = Dispatcher(bot, None, use_context=True)
+
+# Load/save premium users
+PREMIUM_USERS_FILE = "premium_users.json"
+
+def load_premium_users():
+    if os.path.exists(PREMIUM_USERS_FILE):
+        with open(PREMIUM_USERS_FILE, "r") as f:
+            return set(json.load(f))
+    return set()
+
+def save_premium_users(users):
+    with open(PREMIUM_USERS_FILE, "w") as f:
+        json.dump(list(users), f)
+
+premium_users = load_premium_users()
+
+# ElevenLabs TTS
+def generate_voice(text):
+    headers = {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "Content-Type": "application/json"
+    }
+    data = {
+        "text": text,
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75
+        }
+    }
+    response = requests.post(
+        "https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
+        headers=headers,
+        json=data
+    )
+    return BytesIO(response.content)
+
+# OpenRouter AI response
+def generate_ai_reply(prompt):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
-    json_data = {
-        "model": "nous-hermes-2",  # or another model you prefer
+    data = {
+        "model": "nous-hermes2",
         "messages": [
+            {"role": "system", "content": "You're a flirty spicy chatbot."},
             {"role": "user", "content": prompt}
         ]
     }
-    response = requests.post(url, headers=headers, json=json_data)
-    if response.ok:
-        data = response.json()
-        # Extract the AI message
-        return data["choices"][0]["message"]["content"]
+    response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
+    return response.json()["choices"][0]["message"]["content"]
+
+# Handlers
+def start(update, context):
+    user_id = update.effective_user.id
+    if user_id in premium_users:
+        update.message.reply_text("🔥 Welcome back, premium user!")
     else:
-        print("OpenRouter API error:", response.text)
-        return "Sorry, I couldn't process that."
+        pay_link = f"{BASE_URL}/pay?user_id={user_id}"
+        update.message.reply_text(
+            f"🔥 Welcome to TheSpicyChatBot!\n\nTo chat with me, please unlock premium 😉\n"
+            f"💳 Click below to purchase premium:\n{pay_link}"
+        )
 
-@app.route('/')
-def home():
-    return "🔥 Spicy Bot is live!"
+def handle_message(update, context):
+    user_id = update.effective_user.id
+    if user_id not in premium_users:
+        update.message.reply_text("Please purchase premium first using /pay.")
+        return
+    text = update.message.text
+    reply = generate_ai_reply(text)
+    update.message.reply_text(reply)
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    data = request.get_json()
-    if "message" in data:
-        chat_id = data["message"]["chat"]["id"]
-        text = data["message"].get("text", "")
+    # Voice reply
+    voice_data = generate_voice(reply)
+    voice_data.name = "voice.ogg"
+    bot.send_voice(chat_id=update.effective_chat.id, voice=voice_data)
 
-        if chat_id not in premium_users and text not in ["/start", "/pay"]:
-            send_message(chat_id, "🚫 This is a premium-only bot.\nUse /pay to unlock access.")
-            return jsonify(ok=True)
-
-        if text == "/start":
-            send_message(chat_id, "🔥 Welcome to TheSpicyChatBot!\n\nTo chat with me, please unlock premium 😉")
-        elif text == "/pay":
-            payment_link = f"{YOUR_RENDER_URL}/pay?user_id={chat_id}"
-            send_message(chat_id, f"💳 Click below to purchase premium:\n{payment_link}")
-        elif chat_id in premium_users:
-            ai_response = query_openrouter(text)
-            send_message(chat_id, ai_response)
-
-    return jsonify(ok=True)
-
-@app.route('/pay')
-def pay():
-    user_id = request.args.get("user_id")
-    if not user_id:
-        return "Missing user_id", 400
-
-    checkout = stripe.checkout.Session.create(
+def pay(update, context):
+    user_id = update.effective_user.id
+    session = stripe.checkout.Session.create(
         payment_method_types=["card"],
-        line_items=[{
-            "price": STRIPE_PRICE_ID,
-            "quantity": 1
-        }],
-        mode="subscription",
-        success_url=f"{YOUR_RENDER_URL}/success?user_id={user_id}",
-        cancel_url=f"{YOUR_RENDER_URL}/cancel",
-        metadata={"user_id": user_id}  # Important for webhook tracking
+        line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
+        mode="payment",
+        success_url=f"{BASE_URL}/success?user_id={user_id}",
+        cancel_url=f"{BASE_URL}/cancel"
     )
-    return redirect(checkout.url, code=303)
+    update.message.reply_text(f"💳 Click here to pay: {session.url}")
 
-@app.route('/success')
-def success():
-    user_id = request.args.get("user_id")
-    if user_id:
-        premium_users.add(int(user_id))
-        send_message(user_id, "✅ Thank you for your payment!\nYou now have premium access.")
-    return "Payment successful!"
+# Telegram webhook route
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    dispatcher.process_update(update)
+    return "OK"
 
-@app.route('/cancel')
-def cancel():
-    return "Payment cancelled."
-
-@app.route('/stripe-webhook', methods=['POST'])
+# Stripe webhook
+@app.route("/stripe_webhook", methods=["POST"])
 def stripe_webhook():
     payload = request.data
-    sig_header = request.headers.get("stripe-signature")
-
+    sig_header = request.headers.get("Stripe-Signature")
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
-    except stripe.error.SignatureVerificationError:
-        return "Invalid signature", 400
+        if event["type"] == "checkout.session.completed":
+            user_id = int(request.args.get("user_id", 0))
+            premium_users.add(user_id)
+            save_premium_users(premium_users)
+            bot.send_message(chat_id=user_id, text="🎉 You are now a premium user! Start chatting.")
+    except Exception as e:
+        return str(e), 400
+    return "", 200
 
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        metadata = session.get("metadata", {})
-        user_id = metadata.get("user_id")
-        if user_id:
-            premium_users.add(int(user_id))
-            send_message(user_id, "✅ Payment confirmed! You now have full access.")
-    return "Webhook received", 200
+# Payment routes
+@app.route("/pay")
+def pay_route():
+    user_id = request.args.get("user_id")
+    session = stripe.checkout.Session.create(
+        payment_method_types=["card"],
+        line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
+        mode="payment",
+        success_url=f"{BASE_URL}/success?user_id={user_id}",
+        cancel_url=f"{BASE_URL}/cancel"
+    )
+    return redirect(session.url, code=303)
 
-def send_message(chat_id, text):
-    resp = requests.post(f"{BOT_API_URL}/sendMessage", json={
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML"
-    })
-    if not resp.ok:
-        print(f"Failed to send message: {resp.status_code} - {resp.text}")
+@app.route("/success")
+def success():
+    user_id = int(request.args.get("user_id", 0))
+    premium_users.add(user_id)
+    save_premium_users(premium_users)
+    bot.send_message(chat_id=user_id, text="✅ Payment successful! You're now a premium user.")
+    return "Payment successful! You may now return to Telegram."
 
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+@app.route("/cancel")
+def cancel():
+    return "Payment canceled."
+
+# Start
+dispatcher.add_handler(CommandHandler("start", start))
+dispatcher.add_handler(CommandHandler("pay", pay))
+dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+
+@app.route("/")
+def home():
+    return "Bot is live 🎉"
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
+
 
 
 
