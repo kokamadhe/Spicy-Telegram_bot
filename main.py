@@ -1,124 +1,108 @@
-import os
-import requests
 from flask import Flask, request
+import requests
+import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+app = Flask(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 MODEL_LAB_API_KEY = os.getenv("MODEL_LAB_API_KEY")
 
-app = Flask(__name__)
-
-# Telegram API URL
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# OpenRouter Chat Endpoint
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# --- Telegram Message Sender ---
+def send_telegram_message(chat_id, text):
+    url = f"{TELEGRAM_API_URL}/sendMessage"
+    data = {"chat_id": chat_id, "text": text}
+    requests.post(url, json=data)
 
-@app.route("/")
-def home():
-    return "Aria Blaze is live! 🔥"
+def send_telegram_photo(chat_id, photo_url, caption=None):
+    url = f"{TELEGRAM_API_URL}/sendPhoto"
+    data = {"chat_id": chat_id, "photo": photo_url}
+    if caption:
+        data["caption"] = caption
+    requests.post(url, data=data)
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    data = request.get_json()
+# --- Text Generation via OpenRouter ---
+def generate_reply(message):
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "model": "nous-hermes2",
+        "messages": [
+            {"role": "system", "content": "You are an uncensored, flirty, NSFW AI girlfriend."},
+            {"role": "user", "content": message}
+        ]
+    }
 
-    if "message" not in data:
-        return "No message", 200
+    response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=body)
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
 
-    chat_id = data["message"]["chat"]["id"]
-    user_message = data["message"].get("text", "")
-
-    if user_message.startswith("/image"):
-        prompt = user_message.replace("/image", "").strip()
-        if not prompt:
-            prompt = "a beautiful fantasy woman in futuristic city"
-        image_url = generate_image(prompt)
-        if image_url:
-            send_photo(chat_id, image_url)
-        else:
-            send_message(chat_id, "❌ Failed to generate image.")
-    else:
-        reply = generate_reply(user_message)
-        if reply:
-            send_message(chat_id, reply)
-        else:
-            send_message(chat_id, "❌ Text generation failed.")
-    
-    return "OK", 200
-
-def generate_reply(user_input):
-    try:
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://ariablazebot.com",  # Can be any valid domain
-            "X-Title": "AriaBlazeBot"
-        }
-
-        payload = {
-            "model": "nous-hermes2",
-            "messages": [
-                {"role": "system", "content": "You are Aria Blaze, an uncensored and flirty NSFW AI girl."},
-                {"role": "user", "content": user_input}
-            ]
-        }
-
-        response = requests.post(OPENROUTER_URL, headers=headers, json=payload)
-        response.raise_for_status()
-
-        data = response.json()
-        return data["choices"][0]["message"]["content"].strip()
-
-    except Exception as e:
-        print("❌ Text generation error:", e)
-        return None
-
+# --- NSFW Image Generation ---
 def generate_image(prompt):
+    url = "https://api.modellab.com/v1/stable-diffusion"  # or your chosen NSFW image API
+    headers = {
+        "Authorization": f"Bearer {MODEL_LAB_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "prompt": prompt,
+        "model": "realisticVision",  # use a NSFW-capable model
+        "output_format": "url"
+    }
+
+    response = requests.post(url, headers=headers, json=data)
+    response.raise_for_status()
+    return response.json()["output"][0]  # URL of generated image
+
+# --- Telegram Webhook Handler ---
+def handle_telegram_update(update):
+    if "message" not in update:
+        return
+
+    message = update["message"]
+    chat_id = message["chat"]["id"]
+    text = message.get("text", "")
+
     try:
-        payload = {
-            "key": MODEL_LAB_API_KEY,
-            "prompt": prompt,
-            "negative_prompt": "blurry, bad quality, censored",
-            "width": "512",
-            "height": "512",
-            "samples": "1",
-            "num_inference_steps": "30",
-            "guidance_scale": 7.5,
-            "model_id": "realistic-vision-v51",
-            "safety_checker": "no",
-            "webhook": None,
-            "track_id": None
-        }
-
-        response = requests.post("https://stablediffusionapi.com/api/v3/text2img", json=payload)
-        response.raise_for_status()
-
-        data = response.json()
-        return data["output"][0] if "output" in data else None
+        if text.startswith("/image"):
+            prompt = text.replace("/image", "").strip()
+            if not prompt:
+                send_telegram_message(chat_id, "❗ Please provide a prompt after /image.")
+                return
+            send_telegram_message(chat_id, "🎨 Generating image...")
+            image_url = generate_image(prompt)
+            send_telegram_photo(chat_id, image_url, caption=f"🖼️ Prompt: {prompt}")
+        else:
+            send_telegram_message(chat_id, "💬 Thinking...")
+            reply = generate_reply(text)
+            send_telegram_message(chat_id, reply)
 
     except Exception as e:
-        print("❌ Image generation error:", e)
-        return None
+        send_telegram_message(chat_id, f"❌ Error: {str(e)}")
 
-def send_message(chat_id, text):
-    payload = {
-        "chat_id": chat_id,
-        "text": text
-    }
-    requests.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload)
+# --- Flask Routes ---
+@app.route("/", methods=["GET"])
+def home():
+    return "Bot is running", 200
 
-def send_photo(chat_id, photo_url):
-    payload = {
-        "chat_id": chat_id,
-        "photo": photo_url
-    }
-    requests.post(f"{TELEGRAM_API_URL}/sendPhoto", json=payload)
+@app.route("/", methods=["POST"])
+def webhook():
+    update = request.get_json()
+    handle_telegram_update(update)
+    return "", 200
 
+# --- Gunicorn entrypoint ---
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    app.run(host="0.0.0.0", port=5000)
+
+
 
 
 
