@@ -7,84 +7,89 @@ load_dotenv()
 
 app = Flask(__name__)
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-MODEL_API_KEY = os.getenv("MODEL_API_KEY")  # OpenRouter for text
-MODEL_LAB_API_KEY = os.getenv("MODEL_LAB_API_KEY")  # ModelLab for image
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+MODEL_LAB_API_KEY = os.getenv("MODEL_LAB_API_KEY")
 
-# Send text message
-def send_message(chat_id, text):
-    requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
-        "chat_id": chat_id,
-        "text": text
-    })
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# Send image
-def send_image(chat_id, image_url):
-    requests.post(f"{TELEGRAM_API_URL}/sendPhoto", json={
-        "chat_id": chat_id,
-        "photo": image_url
-    })
-
-# Generate image with ModelLab / Stable Diffusion API
-def generate_image(prompt):
+# --- TEXT GENERATION HANDLER ---
+def generate_text(prompt):
+    url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {MODEL_LAB_API_KEY}",
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
-    payload = {
-        "prompt": prompt,
-        "model": "realistic-vision",  # or try "dreamshaper", "deliberate", etc.
-        "n": 1,
-        "size": "512x768",
-        "quality": "standard"
+    data = {
+        "model": "gryphe/mythomist-7b",
+        "messages": [{"role": "user", "content": prompt}]
     }
-    response = requests.post("https://api.modellab.space/v1/text2image", json=payload, headers=headers)
-    if response.ok:
+
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"❌ Text generation failed: {e}"
+
+# --- IMAGE GENERATION HANDLER ---
+def generate_image(prompt):
+    url = "https://api.stablediffusionapi.com/v4/dreambooth"
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "key": MODEL_LAB_API_KEY,
+        "model_id": "realistic-vision-v51",
+        "prompt": prompt,
+        "negative_prompt": "blurry, bad anatomy, distorted",
+        "width": "512",
+        "height": "768",
+        "samples": "1",
+        "guidance_scale": 7.5
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
         data = response.json()
-        return data["data"][0]["url"]
-    else:
-        print(response.text)
+        return data["output"][0] if "output" in data else None
+    except Exception as e:
         return None
 
-@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+# --- TELEGRAM WEBHOOK HANDLER ---
+@app.route("/", methods=["POST"])
 def webhook():
     data = request.get_json()
 
-    if "message" in data:
-        message = data["message"]
-        chat_id = message["chat"]["id"]
-        text = message.get("text", "")
+    if "message" in data and "text" in data["message"]:
+        chat_id = data["message"]["chat"]["id"]
+        message_text = data["message"]["text"]
 
-        if text.startswith("/image"):
-            prompt = text.replace("/image", "").strip()
-            if prompt:
-                send_message(chat_id, "🖼️ Generating image...")
-                image_url = generate_image(prompt)
-                if image_url:
-                    send_image(chat_id, image_url)
-                else:
-                    send_message(chat_id, "❌ Failed to generate image.")
+        if message_text.startswith("/image"):
+            prompt = message_text.replace("/image", "").strip()
+            image_url = generate_image(prompt)
+            if image_url:
+                send_photo(chat_id, image_url)
             else:
-                send_message(chat_id, "❗ Please provide a prompt after /image")
+                send_message(chat_id, "❌ Failed to generate image.")
         else:
-            # Text generation via OpenRouter (your existing text logic)
-            headers = {
-                "Authorization": f"Bearer {MODEL_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            body = {
-                "model": "gryphe/mythomist-7b",
-                "messages": [{"role": "user", "content": text}]
-            }
-            response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=body)
-            if response.ok:
-                reply = response.json()["choices"][0]["message"]["content"]
-                send_message(chat_id, reply)
-            else:
-                send_message(chat_id, "❌ Error generating reply.")
+            reply = generate_text(message_text)
+            send_message(chat_id, reply)
 
     return {"ok": True}
+
+# --- UTILITIES ---
+def send_message(chat_id, text):
+    url = f"{TELEGRAM_API_URL}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    requests.post(url, json=payload)
+
+def send_photo(chat_id, photo_url):
+    url = f"{TELEGRAM_API_URL}/sendPhoto"
+    payload = {"chat_id": chat_id, "photo": photo_url}
+    requests.post(url, json=payload)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
 
 
 
