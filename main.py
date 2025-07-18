@@ -1,4 +1,5 @@
 import os
+import json
 from flask import Flask, request, jsonify, redirect
 import stripe
 import requests
@@ -18,13 +19,34 @@ ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 YOUR_RENDER_URL = "https://spicy-telegram-bot-5.onrender.com"
 BOT_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# In-memory storage for user access (use DB in production!)
-premium_users = set()
+PREMIUM_USERS_FILE = "premium_users.json"
+
+app = Flask(__name__)
+
+def load_premium_users():
+    if os.path.exists(PREMIUM_USERS_FILE):
+        try:
+            with open(PREMIUM_USERS_FILE, "r") as f:
+                data = json.load(f)
+                # Make sure to load as set of ints
+                return set(map(int, data))
+        except Exception as e:
+            print(f"Error loading premium users file: {e}")
+    return set()
+
+def save_premium_users(premium_users):
+    try:
+        with open(PREMIUM_USERS_FILE, "w") as f:
+            # Save as list for JSON
+            json.dump(list(premium_users), f)
+    except Exception as e:
+        print(f"Error saving premium users file: {e}")
+
+# Load premium users on startup
+premium_users = load_premium_users()
 
 # Setup Stripe API key
 stripe.api_key = STRIPE_SECRET_KEY
-
-app = Flask(__name__)
 
 def query_openrouter(prompt: str) -> str:
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -33,7 +55,7 @@ def query_openrouter(prompt: str) -> str:
         "Content-Type": "application/json"
     }
     json_data = {
-        "model": "nous-hermes-2",  # or your preferred model
+        "model": "nous-hermes-2",
         "messages": [
             {"role": "user", "content": prompt}
         ]
@@ -59,7 +81,7 @@ def send_voice_message(chat_id, text):
     if not ELEVENLABS_API_KEY:
         send_message(chat_id, "⚠️ Voice reply unavailable: missing ElevenLabs API key.")
         return
-    
+
     tts_url = "https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL/stream"
     headers = {
         "xi-api-key": ELEVENLABS_API_KEY,
@@ -106,7 +128,6 @@ def webhook():
             send_message(chat_id, f"💳 Click below to purchase premium:\n{payment_link}")
         elif chat_id in premium_users:
             ai_response = query_openrouter(text)
-            # Send both text and voice replies:
             send_message(chat_id, ai_response)
             send_voice_message(chat_id, ai_response)
 
@@ -135,8 +156,10 @@ def pay():
 def success():
     user_id = request.args.get("user_id")
     if user_id:
-        premium_users.add(int(user_id))
-        send_message(user_id, "✅ Thank you for your payment!\nYou now have premium access.")
+        user_id_int = int(user_id)
+        premium_users.add(user_id_int)
+        save_premium_users(premium_users)
+        send_message(user_id_int, "✅ Thank you for your payment!\nYou now have premium access.")
     return "Payment successful!"
 
 @app.route('/cancel')
@@ -158,13 +181,16 @@ def stripe_webhook():
         metadata = session.get("metadata", {})
         user_id = metadata.get("user_id")
         if user_id:
-            premium_users.add(int(user_id))
-            send_message(user_id, "✅ Payment confirmed! You now have full access.")
+            user_id_int = int(user_id)
+            premium_users.add(user_id_int)
+            save_premium_users(premium_users)
+            send_message(user_id_int, "✅ Payment confirmed! You now have full access.")
     return "Webhook received", 200
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
