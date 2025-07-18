@@ -1,112 +1,107 @@
-from flask import Flask, request, jsonify, redirect
-import requests
+from flask import Flask, request, jsonify, render_template_string, redirect
 import os
 import stripe
-from dotenv import load_dotenv
+import telegram
 
-load_dotenv()
+# Your credentials
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")  # Your actual Stripe price ID
+BOT = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
+# Your app and Stripe config
 app = Flask(__name__)
+stripe.api_key = STRIPE_SECRET_KEY
 
-# ENV VARS
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY")
-DOMAIN = os.environ.get("DOMAIN", "https://your-app-name.onrender.com")  # Update this to your actual domain
-PREMIUM_PRICE_ID = os.environ.get("PREMIUM_PRICE_ID")  # Your Stripe price ID
-
-stripe.api_key = STRIPE_API_KEY
-
-# Store premium users (in-memory, replace with DB for persistence)
+# Store who paid
 premium_users = set()
 
-@app.route('/')
+@app.route("/", methods=["GET"])
 def home():
-    return '✅ Spicy ChatBot is live!'
+    return "Bot is alive!"
 
-@app.route('/webhook', methods=['POST'])
+@app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
+
     if "message" in data:
         chat_id = data["message"]["chat"]["id"]
         text = data["message"].get("text", "")
 
-        if text == "/start":
-            send_message(chat_id, "🔥 Welcome to TheSpicyChatBot!\n\nTo chat with me, please [unlock premium](https://your-app-name.onrender.com/pay?user_id={}) 😉".format(chat_id))
-        elif text == "/pay":
-            send_message(chat_id, "💳 Click here to unlock premium access:\n" + f"{DOMAIN}/pay?user_id={chat_id}")
-        elif chat_id in premium_users:
-            ai_reply = generate_ai_reply(text)
-            send_message(chat_id, ai_reply)
+        if chat_id not in premium_users:
+            if text == "/start":
+                BOT.send_message(chat_id=chat_id, text="🔥 Welcome to TheSpicyChatBot!\n\nTo chat with me, please unlock premium 😉")
+            elif text == "/pay":
+                payment_link = f"https://spicy-telegram-bot-4.onrender.com/pay?user_id={chat_id}"
+                BOT.send_message(chat_id=chat_id, text=f"Unlock premium access here 👇\n{payment_link}")
+            else:
+                BOT.send_message(chat_id=chat_id, text="❌ This is a premium-only bot.\nUse /pay to unlock access.")
         else:
-            send_message(chat_id, "🔒 This is a premium-only bot.\nUse /pay to unlock access.")
+            # Premium reply (replace this with actual chat logic)
+            BOT.send_message(chat_id=chat_id, text=f"✅ You’re premium! Ask me anything 🔥")
 
-    return jsonify({"ok": True})
+    return jsonify(success=True)
 
-@app.route('/pay')
-def create_checkout():
+@app.route("/pay", methods=["GET"])
+def pay():
     user_id = request.args.get("user_id")
     if not user_id:
-        return "Missing user_id", 400
+        return "User ID missing", 400
 
-    try:
-        checkout_session = stripe.checkout.Session.create(
-            payment_method_types=["card"],
-            line_items=[{
-                'price': PREMIUM_PRICE_ID,
-                'quantity': 1,
-            }],
-            mode='payment',  # change to 'subscription' for recurring
-            success_url=f"{DOMAIN}/success?user_id={user_id}",
-            cancel_url=f"{DOMAIN}/cancel",
-            metadata={'user_id': user_id}
-        )
-        return redirect(checkout_session.url, code=303)
-    except Exception as e:
-        return f"Stripe error: {str(e)}", 400
+    session = stripe.checkout.Session.create(
+        payment_method_types=["card"],
+        line_items=[{
+            "price": STRIPE_PRICE_ID,
+            "quantity": 1,
+        }],
+        mode="payment",
+        success_url=f"https://spicy-telegram-bot-4.onrender.com/success?user_id={user_id}",
+        cancel_url="https://t.me/your_bot_username",  # Replace with your bot link
+        metadata={"user_id": user_id}
+    )
 
-@app.route('/success')
-def payment_success():
+    return redirect(session.url, code=303)
+
+@app.route("/success", methods=["GET"])
+def success():
     user_id = request.args.get("user_id")
     if user_id:
         premium_users.add(int(user_id))
-        send_message(user_id, "🎉 Thank you for subscribing! You now have premium access.")
-        return "✅ Premium access granted!"
-    return "Missing user_id", 400
+        try:
+            BOT.send_message(chat_id=int(user_id), text="🎉 Thanks for your payment! You now have premium access.")
+        except Exception as e:
+            print(f"Failed to message user: {e}")
+    return "Payment successful. You can now return to Telegram."
 
-@app.route('/cancel')
-def payment_cancel():
-    return "❌ Payment canceled. You can try again via /pay"
+# Stripe webhook endpoint (optional for auto-validation)
+@app.route("/stripe-webhook", methods=["POST"])
+def stripe_webhook():
+    payload = request.data
+    sig_header = request.headers.get("Stripe-Signature")
+    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
 
-def send_message(chat_id, text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
-    requests.post(url, json=payload)
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, webhook_secret
+        )
+    except Exception as e:
+        return f"Webhook error: {str(e)}", 400
 
-def generate_ai_reply(user_message):
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "model": "nousresearch/nous-hermes-2-mixtral-8x7b-dpo",
-        "messages": [
-            {"role": "system", "content": "You are a spicy, seductive NSFW chatbot."},
-            {"role": "user", "content": user_message}
-        ]
-    }
-    response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
-    if response.status_code == 200:
-        return response.json()["choices"][0]["message"]["content"]
-    else:
-        return "❌ Error from AI model."
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        user_id = session.get("metadata", {}).get("user_id")
+        if user_id:
+            premium_users.add(int(user_id))
+            try:
+                BOT.send_message(chat_id=int(user_id), text="🎉 Thanks for your payment! You now have premium access.")
+            except Exception as e:
+                print(f"Error sending message: {e}")
 
-if __name__ == '__main__':
+    return "", 200
+
+if __name__ == "__main__":
     app.run(debug=True)
+
 
 
 
