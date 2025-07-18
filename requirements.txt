@@ -3,3 +3,5 @@ requests
 python-dotenv
 gunicorn
 stripe
+python-telegram-bot==13.15
+
