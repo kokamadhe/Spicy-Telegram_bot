@@ -10,3 +10,6 @@ services:
         value: your-telegram-token-here
       - key: OPENROUTER_API_KEY
         value: your-openrouter-key-here
+      - key: STRIPE_SECRET_KEY
+        value: sk_test_XXXXXXXXXXXXXXXXXXXXXXXX  # Replace with your real Stripe secret key
+
