@@ -7,103 +7,84 @@ load_dotenv()
 
 app = Flask(__name__)
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+MODEL_API_KEY = os.getenv("MODEL_API_KEY")  # OpenRouter for text
+MODEL_LAB_API_KEY = os.getenv("MODEL_LAB_API_KEY")  # ModelLab for image
 
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+# Send text message
+def send_message(chat_id, text):
+    requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": text
+    })
 
-# === ROUTE ===
-@app.route("/", methods=["POST"])
-def webhook():
-    data = request.json
-    if "message" in data:
-        chat_id = data["message"]["chat"]["id"]
-        if "text" in data["message"]:
-            message_text = data["message"]["text"]
+# Send image
+def send_image(chat_id, image_url):
+    requests.post(f"{TELEGRAM_API_URL}/sendPhoto", json={
+        "chat_id": chat_id,
+        "photo": image_url
+    })
 
-            if message_text.startswith("/start"):
-                send_message(chat_id, "👋 Hello! I'm your spicy AI. Send me any message or try /image followed by a prompt.")
-            elif message_text.startswith("/image"):
-                prompt = message_text.replace("/image", "").strip()
-                if not prompt:
-                    send_message(chat_id, "🖼️ Please provide a prompt. Example: `/image a sexy elf warrior`")
-                else:
-                    image_url = generate_image(prompt)
-                    if image_url:
-                        send_photo(chat_id, image_url)
-                    else:
-                        send_message(chat_id, "⚠️ Failed to generate image.")
-            else:
-                reply = generate_reply(message_text)
-                send_message(chat_id, reply)
-    return {"ok": True}
-
-
-# === TEXT GENERATION ===
-def generate_reply(message):
+# Generate image with ModelLab / Stable Diffusion API
+def generate_image(prompt):
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {MODEL_LAB_API_KEY}",
         "Content-Type": "application/json"
     }
-
     payload = {
-        "model": "nous-hermes2",
-        "messages": [
-            {"role": "system", "content": "You are a spicy, uncensored, flirty girlfriend chatbot."},
-            {"role": "user", "content": message}
-        ]
+        "prompt": prompt,
+        "model": "realistic-vision",  # or try "dreamshaper", "deliberate", etc.
+        "n": 1,
+        "size": "512x768",
+        "quality": "standard"
     }
-
-    response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
-
-    if response.status_code == 200:
-        return response.json()["choices"][0]["message"]["content"]
+    response = requests.post("https://api.modellab.space/v1/text2image", json=payload, headers=headers)
+    if response.ok:
+        data = response.json()
+        return data["data"][0]["url"]
     else:
-        return "❌ Error: Couldn't fetch reply from AI."
-
-
-# === IMAGE GENERATION ===
-def generate_image(prompt):
-    stability_endpoint = "https://api.stability.ai/v1/generation/stable-diffusion-v1-5/text-to-image"
-    headers = {
-        "Authorization": f"Bearer {STABILITY_API_KEY}",
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-
-    payload = {
-        "cfg_scale": 10,
-        "height": 512,
-        "width": 512,
-        "samples": 1,
-        "steps": 30,
-        "text_prompts": [{"text": prompt}]
-    }
-
-    response = requests.post(stability_endpoint, headers=headers, json=payload)
-
-    if response.status_code == 200:
-        return response.json()["artifacts"][0]["url"]
-    else:
+        print(response.text)
         return None
 
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def webhook():
+    data = request.get_json()
 
-# === TELEGRAM HELPERS ===
-def send_message(chat_id, text):
-    url = f"{TELEGRAM_API_URL}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text}
-    requests.post(url, json=payload)
+    if "message" in data:
+        message = data["message"]
+        chat_id = message["chat"]["id"]
+        text = message.get("text", "")
 
+        if text.startswith("/image"):
+            prompt = text.replace("/image", "").strip()
+            if prompt:
+                send_message(chat_id, "🖼️ Generating image...")
+                image_url = generate_image(prompt)
+                if image_url:
+                    send_image(chat_id, image_url)
+                else:
+                    send_message(chat_id, "❌ Failed to generate image.")
+            else:
+                send_message(chat_id, "❗ Please provide a prompt after /image")
+        else:
+            # Text generation via OpenRouter (your existing text logic)
+            headers = {
+                "Authorization": f"Bearer {MODEL_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            body = {
+                "model": "gryphe/mythomist-7b",
+                "messages": [{"role": "user", "content": text}]
+            }
+            response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=body)
+            if response.ok:
+                reply = response.json()["choices"][0]["message"]["content"]
+                send_message(chat_id, reply)
+            else:
+                send_message(chat_id, "❌ Error generating reply.")
 
-def send_photo(chat_id, photo_url):
-    url = f"{TELEGRAM_API_URL}/sendPhoto"
-    payload = {"chat_id": chat_id, "photo": photo_url}
-    requests.post(url, json=payload)
+    return {"ok": True}
 
-
-# === RUN ===
-if __name__ == "__main__":
-    app.run(debug=True)
 
 
