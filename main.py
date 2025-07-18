@@ -1,108 +1,116 @@
-from flask import Flask, request, jsonify, redirect
 import os
+from flask import Flask, request, jsonify, redirect
 import stripe
-from telegram import Bot, Update
-from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ENV VARIABLES
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# Load environment variables
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")
-RENDER_URL = "https://spicy-telegram-bot-4.onrender.com"
 
-# Set up bot
-bot = Bot(token=BOT_TOKEN)
-app = Flask(__name__)
-stripe.api_key = STRIPE_SECRET_KEY
+YOUR_RENDER_URL = "https://spicy-telegram-bot-4.onrender.com"
+BOT_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# In-memory user access (use database for production)
+# In-memory storage for user access
 premium_users = set()
 
-@app.route('/')
-def index():
-    return "Bot is running!"
+# Setup Stripe
+stripe.api_key = STRIPE_SECRET_KEY
 
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🔥 Spicy Bot is live!"
+
+# ✅ Telegram webhook handler
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    payload = request.data
-    sig_header = request.headers.get('stripe-signature')
-    try:
-        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
-    except Exception as e:
-        print(f"Webhook error: {e}")
-        return '', 400
+    data = request.get_json()
+    if "message" in data:
+        chat_id = data["message"]["chat"]["id"]
+        text = data["message"].get("text", "")
 
-    if event['type'] == 'checkout.session.completed':
-        session = event['data']['object']
-        user_id = session['client_reference_id']
-        premium_users.add(int(user_id))
-        bot.send_message(chat_id=user_id, text="✅ Payment received! You now have premium access.")
-    return '', 200
+        if chat_id not in premium_users and text not in ["/start", "/pay"]:
+            send_message(chat_id, "🚫 This is a premium-only bot.\nUse /pay to unlock access.")
+            return jsonify(ok=True)
 
+        if text == "/start":
+            send_message(chat_id, "🔥 Welcome to TheSpicyChatBot!\n\nTo chat with me, please unlock premium 😉")
+        elif text == "/pay":
+            payment_link = f"{YOUR_RENDER_URL}/pay?user_id={chat_id}"
+            send_message(chat_id, f"💳 Click below to purchase premium:\n{payment_link}")
+        elif chat_id in premium_users:
+            # Example reply — you can expand with OpenRouter/ModelLab logic
+            send_message(chat_id, f"You said: {text}")
+    return jsonify(ok=True)
+
+# ✅ Stripe checkout session creation
 @app.route('/pay')
 def pay():
     user_id = request.args.get("user_id")
     if not user_id:
         return "Missing user_id", 400
+
+    checkout = stripe.checkout.Session.create(
+        payment_method_types=["card"],
+        line_items=[{
+            "price": STRIPE_PRICE_ID,
+            "quantity": 1
+        }],
+        mode="payment",
+        success_url=f"{YOUR_RENDER_URL}/success?user_id={user_id}",
+        cancel_url=f"{YOUR_RENDER_URL}/cancel"
+    )
+    return redirect(checkout.url, code=303)
+
+@app.route('/success')
+def success():
+    user_id = request.args.get("user_id")
+    if user_id:
+        premium_users.add(int(user_id))
+        send_message(user_id, "✅ Thank you for your payment!\nYou now have premium access.")
+    return "Payment successful!"
+
+@app.route('/cancel')
+def cancel():
+    return "Payment cancelled."
+
+# ✅ Stripe webhook for real validation (optional but good to have)
+@app.route('/stripe-webhook', methods=['POST'])
+def stripe_webhook():
+    payload = request.data
+    sig_header = request.headers.get("stripe-signature")
     try:
-        session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
-            line_items=[{
-                'price': STRIPE_PRICE_ID,
-                'quantity': 1,
-            }],
-            mode='payment',
-            success_url=f"{RENDER_URL}/success",
-            cancel_url=f"{RENDER_URL}/cancel",
-            client_reference_id=user_id,
-        )
-        return redirect(session.url, code=303)
-    except Exception as e:
-        print(f"Stripe error: {e}")
-        return str(e), 500
+        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+    except stripe.error.SignatureVerificationError:
+        return "Invalid signature", 400
 
-@app.route('/webhook_telegram', methods=['POST'])
-def telegram_webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    dispatcher.process_update(update)
-    return "ok"
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        metadata = session.get("metadata", {})
+        user_id = metadata.get("user_id")
+        if user_id:
+            premium_users.add(int(user_id))
+            send_message(user_id, "✅ Payment confirmed! You now have full access.")
+    return "Webhook received", 200
 
-def start(update, context):
-    user_id = update.effective_chat.id
-    context.bot.send_message(chat_id=user_id, text="🔥 Welcome to TheSpicyChatBot!\n\nTo chat with me, please unlock premium 😉")
+# ✅ Send message helper
+def send_message(chat_id, text):
+    requests.post(f"{BOT_API_URL}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": text
+    })
 
-def pay(update, context):
-    user_id = update.effective_chat.id
-    payment_link = f"{RENDER_URL}/pay?user_id={user_id}"
-    context.bot.send_message(chat_id=user_id, text=f"💳 Unlock premium: {payment_link}")
+# Run the app
+if __name__ == '__main__':
+    app.run(host="0.0.0.0", port=10000)
 
-def handle_message(update, context):
-    user_id = update.effective_chat.id
-    if user_id not in premium_users:
-        context.bot.send_message(chat_id=user_id, text="🚫 This is a premium-only bot.\nUse /pay to unlock access.")
-        return
-    user_message = update.message.text
-    context.bot.send_message(chat_id=user_id, text=f"🤖 AI reply to: {user_message}")
-
-# Setup dispatcher
-dispatcher = Dispatcher(bot, None, workers=0)
-dispatcher.add_handler(CommandHandler("start", start))
-dispatcher.add_handler(CommandHandler("pay", pay))
-dispatcher.add_handler(MessageHandler(Filters.text & (~Filters.command), handle_message))
-
-# Set webhook on bot startup
-@app.before_first_request
-def set_webhook():
-    webhook_url = f"{RENDER_URL}/webhook_telegram"
-    bot.set_webhook(webhook_url)
-    print(f"✅ Webhook set to {webhook_url}")
-
-if __name__ == "__main__":
-    app.run(debug=False, host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 
 
 
