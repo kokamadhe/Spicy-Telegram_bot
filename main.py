@@ -13,13 +13,14 @@ STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")
 
-YOUR_RENDER_URL = "https://spicy-telegram-bot-4.onrender.com"
+# Updated Render service URL
+YOUR_RENDER_URL = "https://spicy-telegram-bot-5.onrender.com"
 BOT_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# In-memory storage for user access
+# In-memory storage for user access (for production, use a database!)
 premium_users = set()
 
-# Setup Stripe
+# Setup Stripe API key
 stripe.api_key = STRIPE_SECRET_KEY
 
 app = Flask(__name__)
@@ -28,7 +29,6 @@ app = Flask(__name__)
 def home():
     return "🔥 Spicy Bot is live!"
 
-# ✅ Telegram webhook handler
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.get_json()
@@ -46,11 +46,10 @@ def webhook():
             payment_link = f"{YOUR_RENDER_URL}/pay?user_id={chat_id}"
             send_message(chat_id, f"💳 Click below to purchase premium:\n{payment_link}")
         elif chat_id in premium_users:
-            # Example reply — you can expand with OpenRouter/ModelLab logic
+            # Example reply - replace with your AI chat logic
             send_message(chat_id, f"You said: {text}")
     return jsonify(ok=True)
 
-# ✅ Stripe checkout session creation
 @app.route('/pay')
 def pay():
     user_id = request.args.get("user_id")
@@ -65,7 +64,8 @@ def pay():
         }],
         mode="payment",
         success_url=f"{YOUR_RENDER_URL}/success?user_id={user_id}",
-        cancel_url=f"{YOUR_RENDER_URL}/cancel"
+        cancel_url=f"{YOUR_RENDER_URL}/cancel",
+        metadata={"user_id": user_id}  # Important for webhook tracking
     )
     return redirect(checkout.url, code=303)
 
@@ -81,11 +81,11 @@ def success():
 def cancel():
     return "Payment cancelled."
 
-# ✅ Stripe webhook for real validation (optional but good to have)
 @app.route('/stripe-webhook', methods=['POST'])
 def stripe_webhook():
     payload = request.data
     sig_header = request.headers.get("stripe-signature")
+
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
     except stripe.error.SignatureVerificationError:
@@ -100,16 +100,19 @@ def stripe_webhook():
             send_message(user_id, "✅ Payment confirmed! You now have full access.")
     return "Webhook received", 200
 
-# ✅ Send message helper
 def send_message(chat_id, text):
-    requests.post(f"{BOT_API_URL}/sendMessage", json={
+    resp = requests.post(f"{BOT_API_URL}/sendMessage", json={
         "chat_id": chat_id,
-        "text": text
+        "text": text,
+        "parse_mode": "HTML"
     })
+    if not resp.ok:
+        print(f"Failed to send message: {resp.status_code} - {resp.text}")
 
-# Run the app
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+
 
 
 
