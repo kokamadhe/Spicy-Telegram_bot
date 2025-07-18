@@ -1,6 +1,6 @@
-from flask import Flask, request
-import requests
 import os
+import requests
+from flask import Flask, request
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -13,7 +13,6 @@ MODEL_LAB_API_KEY = os.getenv("MODEL_LAB_API_KEY")
 
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# --- Telegram Message Sender ---
 def send_telegram_message(chat_id, text):
     url = f"{TELEGRAM_API_URL}/sendMessage"
     data = {"chat_id": chat_id, "text": text}
@@ -26,42 +25,40 @@ def send_telegram_photo(chat_id, photo_url, caption=None):
         data["caption"] = caption
     requests.post(url, data=data)
 
-# --- Text Generation via OpenRouter ---
 def generate_reply(message):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
     }
     body = {
-        "model": "nous-hermes2",
+        "model": "nousresearch/nous-hermes-2-mixtral-8x7b-dpo",
         "messages": [
             {"role": "system", "content": "You are an uncensored, flirty, NSFW AI girlfriend."},
             {"role": "user", "content": message}
-        ]
+        ],
+        "max_tokens": 1000
     }
 
     response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=body)
     response.raise_for_status()
     return response.json()["choices"][0]["message"]["content"]
 
-# --- NSFW Image Generation ---
 def generate_image(prompt):
-    url = "https://api.modellab.com/v1/stable-diffusion"  # or your chosen NSFW image API
+    url = "https://api.modellab.com/v1/stable-diffusion"
     headers = {
         "Authorization": f"Bearer {MODEL_LAB_API_KEY}",
         "Content-Type": "application/json"
     }
     data = {
         "prompt": prompt,
-        "model": "realisticVision",  # use a NSFW-capable model
+        "model": "realisticVision",
         "output_format": "url"
     }
 
     response = requests.post(url, headers=headers, json=data)
     response.raise_for_status()
-    return response.json()["output"][0]  # URL of generated image
+    return response.json()["output"][0]
 
-# --- Telegram Webhook Handler ---
 def handle_telegram_update(update):
     if "message" not in update:
         return
@@ -76,7 +73,7 @@ def handle_telegram_update(update):
             if not prompt:
                 send_telegram_message(chat_id, "❗ Please provide a prompt after /image.")
                 return
-            send_telegram_message(chat_id, "🎨 Generating image...")
+            send_telegram_message(chat_id, "🎨 Generating image, please wait...")
             image_url = generate_image(prompt)
             send_telegram_photo(chat_id, image_url, caption=f"🖼️ Prompt: {prompt}")
         else:
@@ -87,7 +84,6 @@ def handle_telegram_update(update):
     except Exception as e:
         send_telegram_message(chat_id, f"❌ Error: {str(e)}")
 
-# --- Flask Routes ---
 @app.route("/", methods=["GET"])
 def home():
     return "Bot is running", 200
@@ -98,9 +94,9 @@ def webhook():
     handle_telegram_update(update)
     return "", 200
 
-# --- Gunicorn entrypoint ---
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
 
 
 
