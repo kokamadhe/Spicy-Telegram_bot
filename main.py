@@ -1,104 +1,109 @@
-import os
+from flask import Flask, request
 import requests
-from flask import Flask, request, jsonify
+import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-
-BOT_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-
 app = Flask(__name__)
 
-HEADERS = {
-    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-    "Content-Type": "application/json"
-}
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
 
-def send_message(chat_id, text):
-    requests.post(f"{BOT_URL}/sendMessage", json={
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown"
-    })
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-def send_photo(chat_id, photo_url, caption=None):
-    payload = {
-        "chat_id": chat_id,
-        "photo": photo_url,
-    }
-    if caption:
-        payload["caption"] = caption
-    requests.post(f"{BOT_URL}/sendPhoto", json=payload)
-
-def generate_text_reply(prompt):
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    body = {
-        "model": "gryphe/mythomist-7b",
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
-        "max_tokens": 500,
-        "temperature": 0.8,
-        "top_p": 0.9
-    }
-    response = requests.post(url, headers=HEADERS, json=body)
-    response.raise_for_status()
-    data = response.json()
-    return data["choices"][0]["message"]["content"]
-
-def generate_image(prompt):
-    url = "https://openrouter.ai/api/v1/image/generations"
-    body = {
-        "model": "revAnimated",
-        "prompt": prompt,
-        "negative_prompt": "blurry, low quality, watermark, text, cropped",
-        "width": 512,
-        "height": 768,
-        "samples": 1,
-        "steps": 30,
-        "cfg_scale": 7.5
-    }
-    response = requests.post(url, headers=HEADERS, json=body)
-    response.raise_for_status()
-    data = response.json()
-    # The response may include a list of image URLs under "artifacts"
-    return data["artifacts"][0]["url"]
-
+# === ROUTE ===
 @app.route("/", methods=["POST"])
 def webhook():
-    data = request.get_json()
-
+    data = request.json
     if "message" in data:
         chat_id = data["message"]["chat"]["id"]
-        text = data["message"].get("text", "").strip()
+        if "text" in data["message"]:
+            message_text = data["message"]["text"]
 
-        if text.startswith("/image"):
-            prompt = text[len("/image"):].strip()
-            if not prompt:
-                send_message(chat_id, "Please provide a prompt after /image. Example:\n/image a sexy anime warrior")
-                return jsonify({"status": "ok"})
-
-            send_message(chat_id, "🎨 Generating your NSFW image... please wait 20–40 seconds.")
-
-            try:
-                image_url = generate_image(prompt)
-                send_photo(chat_id, image_url, caption=f"Prompt: {prompt}")
-            except Exception as e:
-                send_message(chat_id, f"❌ Failed to generate image. Error: {str(e)}")
-
-        else:
-            try:
-                reply = generate_text_reply(text)
+            if message_text.startswith("/start"):
+                send_message(chat_id, "👋 Hello! I'm your spicy AI. Send me any message or try /image followed by a prompt.")
+            elif message_text.startswith("/image"):
+                prompt = message_text.replace("/image", "").strip()
+                if not prompt:
+                    send_message(chat_id, "🖼️ Please provide a prompt. Example: `/image a sexy elf warrior`")
+                else:
+                    image_url = generate_image(prompt)
+                    if image_url:
+                        send_photo(chat_id, image_url)
+                    else:
+                        send_message(chat_id, "⚠️ Failed to generate image.")
+            else:
+                reply = generate_reply(message_text)
                 send_message(chat_id, reply)
-            except Exception as e:
-                send_message(chat_id, f"⚠️ Error generating reply: {str(e)}")
-
-    return jsonify({"status": "ok"})
+    return {"ok": True}
 
 
+# === TEXT GENERATION ===
+def generate_reply(message):
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "nous-hermes2",
+        "messages": [
+            {"role": "system", "content": "You are a spicy, uncensored, flirty girlfriend chatbot."},
+            {"role": "user", "content": message}
+        ]
+    }
+
+    response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+
+    if response.status_code == 200:
+        return response.json()["choices"][0]["message"]["content"]
+    else:
+        return "❌ Error: Couldn't fetch reply from AI."
+
+
+# === IMAGE GENERATION ===
+def generate_image(prompt):
+    stability_endpoint = "https://api.stability.ai/v1/generation/stable-diffusion-v1-5/text-to-image"
+    headers = {
+        "Authorization": f"Bearer {STABILITY_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    payload = {
+        "cfg_scale": 10,
+        "height": 512,
+        "width": 512,
+        "samples": 1,
+        "steps": 30,
+        "text_prompts": [{"text": prompt}]
+    }
+
+    response = requests.post(stability_endpoint, headers=headers, json=payload)
+
+    if response.status_code == 200:
+        return response.json()["artifacts"][0]["url"]
+    else:
+        return None
+
+
+# === TELEGRAM HELPERS ===
+def send_message(chat_id, text):
+    url = f"{TELEGRAM_API_URL}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    requests.post(url, json=payload)
+
+
+def send_photo(chat_id, photo_url):
+    url = f"{TELEGRAM_API_URL}/sendPhoto"
+    payload = {"chat_id": chat_id, "photo": photo_url}
+    requests.post(url, json=payload)
+
+
+# === RUN ===
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(debug=True)
+
 
