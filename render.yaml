@@ -7,9 +7,16 @@ services:
     startCommand: gunicorn main:app
     envVars:
       - key: TELEGRAM_BOT_TOKEN
-        value: your-telegram-token-here
+        fromSecret: TELEGRAM_BOT_TOKEN
       - key: OPENROUTER_API_KEY
-        value: your-openrouter-key-here
+        fromSecret: OPENROUTER_API_KEY
+      - key: MODEL_LAB_API_KEY
+        fromSecret: MODEL_LAB_API_KEY
       - key: STRIPE_SECRET_KEY
-        value: sk_test_XXXXXXXXXXXXXXXXXXXXXXXX  # Replace with your real Stripe secret key
+        fromSecret: STRIPE_SECRET_KEY
+      - key: STRIPE_WEBHOOK_SECRET
+        fromSecret: STRIPE_WEBHOOK_SECRET
+      - key: STRIPE_PRICE_ID
+        fromSecret: STRIPE_PRICE_ID
+
 
