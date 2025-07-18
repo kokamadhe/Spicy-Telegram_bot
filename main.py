@@ -62,7 +62,7 @@ def pay():
             "price": STRIPE_PRICE_ID,
             "quantity": 1
         }],
-        mode="payment",
+        mode="subscription",
         success_url=f"{YOUR_RENDER_URL}/success?user_id={user_id}",
         cancel_url=f"{YOUR_RENDER_URL}/cancel",
         metadata={"user_id": user_id}  # Important for webhook tracking
