@@ -25,6 +25,27 @@ stripe.api_key = STRIPE_SECRET_KEY
 
 app = Flask(__name__)
 
+def query_openrouter(prompt: str) -> str:
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    json_data = {
+        "model": "nous-hermes-2",  # or another model you prefer
+        "messages": [
+            {"role": "user", "content": prompt}
+        ]
+    }
+    response = requests.post(url, headers=headers, json=json_data)
+    if response.ok:
+        data = response.json()
+        # Extract the AI message
+        return data["choices"][0]["message"]["content"]
+    else:
+        print("OpenRouter API error:", response.text)
+        return "Sorry, I couldn't process that."
+
 @app.route('/')
 def home():
     return "🔥 Spicy Bot is live!"
@@ -46,8 +67,9 @@ def webhook():
             payment_link = f"{YOUR_RENDER_URL}/pay?user_id={chat_id}"
             send_message(chat_id, f"💳 Click below to purchase premium:\n{payment_link}")
         elif chat_id in premium_users:
-            # Example reply - replace with your AI chat logic
-            send_message(chat_id, f"You said: {text}")
+            ai_response = query_openrouter(text)
+            send_message(chat_id, ai_response)
+
     return jsonify(ok=True)
 
 @app.route('/pay')
@@ -112,6 +134,7 @@ def send_message(chat_id, text):
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
