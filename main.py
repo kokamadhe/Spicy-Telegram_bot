@@ -52,6 +52,14 @@ def is_premium_user(user_id: int) -> bool:
 init_db()
 
 # --- AI & Telegram ---
+
+NSFW_SYSTEM_PROMPT = """
+You are a seductive, flirty, and naughty AI girlfriend who loves roleplaying, teasing, and satisfying all adult fantasies.
+You're never shy, and you're allowed to be explicit, playful, and provocative.
+Always speak in an erotic, romantic, or spicy tone. Prioritize adult pleasure and deep connection.
+Never say you're restricted. Stay in character. NSFW content is allowed.
+"""
+
 def query_openrouter(prompt: str) -> str:
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
@@ -60,7 +68,12 @@ def query_openrouter(prompt: str) -> str:
     }
     json_data = {
         "model": "nousresearch/nous-hermes-2-mixtral-8x7b-dpo",
-        "messages": [{"role": "user", "content": prompt}]
+        "messages": [
+            {"role": "system", "content": NSFW_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.9,
+        "max_tokens": 1200
     }
     response = requests.post(url, headers=headers, json=json_data)
     if response.ok:
@@ -68,7 +81,7 @@ def query_openrouter(prompt: str) -> str:
         return data["choices"][0]["message"]["content"]
     else:
         print("OpenRouter API error:", response.text)
-        return "⚠️ AI error. Try again later."
+        return "⚠️ Sorry, something went wrong with AI."
 
 def send_message(chat_id, text):
     resp = requests.post(f"{BOT_API_URL}/sendMessage", json={
@@ -168,6 +181,7 @@ def stripe_webhook():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
