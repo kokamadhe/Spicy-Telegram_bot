@@ -62,7 +62,7 @@ def query_openrouter(prompt: str) -> str:
         "Content-Type": "application/json"
     }
     json_data = {
-        "model": "nous-hermes-2",
+        "model": "nousresearch/nous-hermes-2-mixtral-8x7b-dpo",
         "messages": [{"role": "user", "content": prompt}]
     }
     response = requests.post(url, headers=headers, json=json_data)
