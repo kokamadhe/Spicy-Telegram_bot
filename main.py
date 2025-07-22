@@ -1,92 +1,173 @@
 import os
+import sqlite3
+from flask import Flask, request, jsonify, redirect
+import stripe
 import requests
-from flask import Flask, request
-from telegram import Update, Bot
-from telegram.ext import Dispatcher, MessageHandler, Filters, CallbackContext
 from dotenv import load_dotenv
 
 load_dotenv()
 
-app = Flask(__name__)
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-bot = Bot(token=TELEGRAM_TOKEN)
+# Environment variables
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-MODEL = "nousresearch/nous-hermes-2-mixtral-8x7b-dpo"
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")
 
-# Initialize dispatcher
-dispatcher = Dispatcher(bot, None, use_context=True)
+YOUR_RENDER_URL = "https://spicy-telegram-bot-5.onrender.com"
+BOT_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-def get_openrouter_reply(message):
+app = Flask(__name__)
+stripe.api_key = STRIPE_SECRET_KEY
+
+# --- SQLite DB setup ---
+DB_PATH = "users.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS premium_users (
+            user_id INTEGER PRIMARY KEY
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def add_premium_user(user_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO premium_users (user_id) VALUES (?)", (user_id,))
+    conn.commit()
+    conn.close()
+
+def is_premium_user(user_id: int) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM premium_users WHERE user_id = ?", (user_id,))
+    result = c.fetchone()
+    conn.close()
+    return result is not None
+
+init_db()
+
+# --- AI & Telegram ---
+def query_openrouter(prompt: str) -> str:
+    url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": MODEL,
-        "messages": [
-            {"role": "system", "content": "You are Aria Blaze, an intelligent, seductive AI girlfriend who chats with users in NSFW, flirty, or emotional style."},
-            {"role": "user", "content": message}
-        ]
-    }
-    response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
-    if response.status_code == 200:
-        return response.json()["choices"][0]["message"]["content"]
-    else:
-        return "⚠️ OpenRouter API error."
-
-def generate_image(prompt):
-    url = "https://api.stability.ai/v2beta/stable-image/generate/core"
-    stability_key = os.getenv("STABILITY_API_KEY")
-    headers = {
-        "Authorization": f"Bearer {stability_key}",
         "Content-Type": "application/json"
     }
-    data = {
-        "prompt": prompt,
-        "output_format": "png",
+    json_data = {
+        "model": "nousresearch/nous-hermes-2-mixtral-8x7b-dpo",
+        "messages": [{"role": "user", "content": prompt}]
     }
-    response = requests.post(url, headers=headers, json=data)
-    if response.status_code == 200:
-        image_bytes = requests.get(response.json()["image"]).content
-        return image_bytes
+    response = requests.post(url, headers=headers, json=json_data)
+    if response.ok:
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
     else:
-        return None
+        print("OpenRouter API error:", response.text)
+        return "⚠️ AI error. Try again later."
 
-def handle_message(update: Update, context: CallbackContext):
-    user_message = update.message.text
+def send_message(chat_id, text):
+    resp = requests.post(f"{BOT_API_URL}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML"
+    })
+    if not resp.ok:
+        print(f"Failed to send message: {resp.status_code} - {resp.text}")
 
-    if user_message.startswith("/image"):
-        prompt = user_message.replace("/image", "").strip()
-        if prompt:
-            image = generate_image(prompt)
-            if image:
-                update.message.reply_photo(photo=image, caption="Here is your image ❤️")
-            else:
-                update.message.reply_text("❌ Failed to generate image.")
-        else:
-            update.message.reply_text("🖼️ Please include a prompt after /image.")
-    else:
-        reply = get_openrouter_reply(user_message)
-        update.message.reply_text(reply)
-
-# Add handler
-dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-dispatcher.add_handler(MessageHandler(Filters.command, handle_message))  # for /image
-
-@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
-def telegram_webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    dispatcher.process_update(update)
-    return "OK", 200
-
-@app.route("/", methods=["GET"])
+# --- Routes ---
+@app.route('/')
 def home():
-    return "Aria Blaze AI bot is running!", 200
+    return "🔥 Spicy Bot is live!"
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+@app.route('/webhook', methods=['POST'])
+def telegram_webhook():
+    data = request.get_json()
 
+    if "message" in data:
+        chat_id = data["message"]["chat"]["id"]
+        text = data["message"].get("text", "")
 
+        if text == "/start":
+            send_message(chat_id, "🔥 Welcome to SpicyChatBot!\nUse /pay to unlock premium features.")
+            return jsonify(ok=True)
+
+        if text == "/pay":
+            payment_link = f"{YOUR_RENDER_URL}/pay?user_id={chat_id}"
+            send_message(chat_id, f"💳 Click to purchase premium:\n{payment_link}")
+            return jsonify(ok=True)
+
+        if not is_premium_user(chat_id):
+            send_message(chat_id, "🚫 This is a premium-only bot.\nUse /pay to unlock access.")
+            return jsonify(ok=True)
+
+        # AI response for premium users
+        ai_response = query_openrouter(text)
+        send_message(chat_id, ai_response)
+
+    return jsonify(ok=True)
+
+@app.route('/pay')
+def pay():
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return "Missing user_id", 400
+
+    checkout = stripe.checkout.Session.create(
+        payment_method_types=["card"],
+        line_items=[{
+            "price": STRIPE_PRICE_ID,
+            "quantity": 1
+        }],
+        mode="subscription",
+        success_url=f"{YOUR_RENDER_URL}/success?user_id={user_id}",
+        cancel_url=f"{YOUR_RENDER_URL}/cancel",
+        metadata={"user_id": user_id}
+    )
+    return redirect(checkout.url, code=303)
+
+@app.route('/success')
+def success():
+    user_id = request.args.get("user_id")
+    if user_id:
+        user_id_int = int(user_id)
+        add_premium_user(user_id_int)
+        send_message(user_id_int, "✅ Thank you for your payment!\nYou now have premium access.")
+    return "Payment successful!"
+
+@app.route('/cancel')
+def cancel():
+    return "Payment cancelled."
+
+@app.route('/stripe-webhook', methods=['POST'])
+def stripe_webhook():
+    payload = request.data
+    sig_header = request.headers.get("stripe-signature")
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+    except stripe.error.SignatureVerificationError:
+        return "Invalid signature", 400
+
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        metadata = session.get("metadata", {})
+        user_id = metadata.get("user_id")
+        if user_id:
+            user_id_int = int(user_id)
+            add_premium_user(user_id_int)
+            send_message(user_id_int, "✅ Payment confirmed! You now have full access.")
+
+    return "Webhook received", 200
+
+# --- Run ---
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
 
 
 
