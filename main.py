@@ -71,7 +71,7 @@ def query_openrouter(prompt: str) -> str:
         return data["choices"][0]["message"]["content"]
     else:
         print("OpenRouter API error:", response.text)
-        return "Sorry, I couldn't process that."
+        return "⚠️ Sorry, something went wrong with AI."
 
 def send_message(chat_id, text):
     resp = requests.post(f"{BOT_API_URL}/sendMessage", json={
@@ -86,7 +86,7 @@ def send_voice_message(chat_id, text):
     if not ELEVENLABS_API_KEY:
         send_message(chat_id, "⚠️ Voice reply unavailable: missing ElevenLabs API key.")
         return
-    
+
     tts_url = "https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL/stream"
     headers = {
         "xi-api-key": ELEVENLABS_API_KEY,
@@ -125,20 +125,25 @@ def webhook():
         chat_id = data["message"]["chat"]["id"]
         text = data["message"].get("text", "")
 
-        # Check premium access
-        if not is_premium_user(chat_id) and text not in ["/start", "/pay"]:
+        # Basic command responses
+        if text == "/start":
+            send_message(chat_id, "🔥 Welcome to SpicyChatBot!\nUse /pay to unlock premium features.")
+            return jsonify(ok=True)
+
+        if text == "/pay":
+            payment_link = f"{YOUR_RENDER_URL}/pay?user_id={chat_id}"
+            send_message(chat_id, f"💳 Click to purchase premium:\n{payment_link}")
+            return jsonify(ok=True)
+
+        # Check premium status
+        if not is_premium_user(chat_id):
             send_message(chat_id, "🚫 This is a premium-only bot.\nUse /pay to unlock access.")
             return jsonify(ok=True)
 
-        if text == "/start":
-            send_message(chat_id, "🔥 Welcome to TheSpicyChatBot!\n\nTo chat with me, please unlock premium 😉")
-        elif text == "/pay":
-            payment_link = f"{YOUR_RENDER_URL}/pay?user_id={chat_id}"
-            send_message(chat_id, f"💳 Click below to purchase premium:\n{payment_link}")
-        elif is_premium_user(chat_id):
-            ai_response = query_openrouter(text)
-            send_message(chat_id, ai_response)
-            send_voice_message(chat_id, ai_response)
+        # Process AI response
+        ai_response = query_openrouter(text)
+        send_message(chat_id, ai_response)
+        send_voice_message(chat_id, ai_response)
 
     return jsonify(ok=True)
 
@@ -192,11 +197,14 @@ def stripe_webhook():
             user_id_int = int(user_id)
             add_premium_user(user_id_int)
             send_message(user_id_int, "✅ Payment confirmed! You now have full access.")
+
     return "Webhook received", 200
 
+# Run server
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
