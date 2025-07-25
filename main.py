@@ -1,158 +1,174 @@
 import os
-import logging
+import sqlite3
 import requests
-import uuid
-from telegram import Update, InputMediaPhoto
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from flask import Flask, request
 from dotenv import load_dotenv
-import firebase_admin
-from firebase_admin import credentials, firestore
+from telegram import Bot, Update
+from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters
+import logging
+import json
 
-# Load env
 load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
+
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+MODEL_LAB_API_KEY = os.getenv("MODEL_LAB_API_KEY")
+NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
+YOUR_CRYPTO_WALLET = os.getenv("YOUR_CRYPTO_WALLET")
 
-# Firebase
-if not firebase_admin._apps:
-    cred = credentials.Certificate("firebase.json")  # Make sure this exists
-    firebase_admin.initialize_app(cred)
-db = firestore.client()
+app = Flask(__name__)
+bot = Bot(token=TOKEN)
 
-# Logging
+# Enable logging
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Verify system
-def is_verified(user_id):
-    doc = db.collection("users").document(str(user_id)).get()
-    return doc.exists and doc.to_dict().get("verified", False)
+# SQLite setup
+conn = sqlite3.connect('users.db', check_same_thread=False)
+cursor = conn.cursor()
+cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, is_premium INTEGER DEFAULT 0, memory TEXT)''')
+conn.commit()
 
+# --- Utility functions ---
 def is_premium(user_id):
-    doc = db.collection("users").document(str(user_id)).get()
-    return doc.exists and doc.to_dict().get("premium", False)
+    cursor.execute("SELECT is_premium FROM users WHERE user_id=?", (user_id,))
+    result = cursor.fetchone()
+    return result and result[0] == 1
 
-def save_message(user_id, message):
-    doc_ref = db.collection("memory").document(str(user_id))
-    old = doc_ref.get().to_dict() if doc_ref.get().exists else {}
-    history = old.get("messages", [])
-    history.append(message)
-    if len(history) > 10:
-        history = history[-10:]
-    doc_ref.set({"messages": history})
+def set_premium(user_id):
+    cursor.execute("INSERT OR REPLACE INTO users (user_id, is_premium) VALUES (?, 1)", (user_id,))
+    conn.commit()
 
-def get_history(user_id):
-    doc = db.collection("memory").document(str(user_id)).get()
-    return doc.to_dict().get("messages", []) if doc.exists else []
+def set_memory(user_id, text):
+    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+    cursor.execute("UPDATE users SET memory=? WHERE user_id=?", (text, user_id))
+    conn.commit()
 
-# Commands
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text("Benvenuto! Usa /verify per iniziare o /pay per diventare premium.")
+def get_memory(user_id):
+    cursor.execute("SELECT memory FROM users WHERE user_id=?", (user_id,))
+    result = cursor.fetchone()
+    return result[0] if result else ""
 
-def help_cmd(update: Update, context: CallbackContext):
-    update.message.reply_text("/verify - Verifica il tuo account\n/status - Controlla il tuo stato\n/pay - Acquista premium\n/image - Genera immagine NSFW (premium)")
+# --- Telegram handlers ---
+def start(update, context):
+    update.message.reply_text("Benvenuto! Usa /verify per diventare premium oppure /pay per pagare.")
 
-def verify(update: Update, context: CallbackContext):
+def verify(update, context):
     user_id = update.message.from_user.id
-    verify_link = f"https://t.me/yourbot?start=verify-{user_id}"
-    db.collection("users").document(str(user_id)).set({"verified": True}, merge=True)
-    update.message.reply_text(f"✅ Verificato! Usa /pay per accedere alle funzioni premium.\nProof: {verify_link}")
+    if is_premium(user_id):
+        update.message.reply_text("✅ Sei già verificato come utente premium.")
+    else:
+        update.message.reply_text("🔐 Per diventare premium usa il comando /pay e segui le istruzioni.")
 
-def status(update: Update, context: CallbackContext):
+def status(update, context):
     user_id = update.message.from_user.id
-    ver = is_verified(user_id)
-    prem = is_premium(user_id)
-    update.message.reply_text(f"🧾 Verificato: {'✅' if ver else '❌'}\n💎 Premium: {'✅' if prem else '❌'}")
+    if is_premium(user_id):
+        update.message.reply_text("✅ Status: Utente PREMIUM")
+    else:
+        update.message.reply_text("❌ Status: Non premium")
 
-def pay(update: Update, context: CallbackContext):
-    user_id = update.message.from_user.id
-    order_id = str(uuid.uuid4())
-    amount = 5.00  # USD
-    payload = {
-        "price_amount": amount,
+def pay(update, context):
+    url = "https://api.nowpayments.io/v1/invoice"
+    headers = {
+        "x-api-key": NOWPAYMENTS_API_KEY,
+        "Content-Type": "application/json"
+    }
+    data = {
+        "price_amount": 5,
         "price_currency": "usd",
-        "pay_currency": "usdttrc20",
-        "order_id": order_id,
-        "ipn_callback_url": "https://your-callback-url.com/payment",
+        "pay_currency": "trx",
+        "order_description": "Accesso Premium Bot",
+        "ipn_callback_url": "https://yourdomain.com/ipn",  # Opzionale
+        "success_url": "https://t.me/your_bot",
+        "cancel_url": "https://t.me/your_bot",
+        "payout_address": YOUR_CRYPTO_WALLET
     }
-    headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json"}
-    r = requests.post("https://api.nowpayments.io/v1/invoice", headers=headers, json=payload)
-    if r.status_code == 200:
-        payment_url = r.json()["invoice_url"]
-        db.collection("users").document(str(user_id)).update({"pending_order": order_id})
-        update.message.reply_text(f"💳 Paga qui per diventare premium:\n{payment_url}")
-    else:
-        update.message.reply_text("Errore durante la creazione del link di pagamento.")
 
-def image_cmd(update: Update, context: CallbackContext):
+    response = requests.post(url, headers=headers, json=data)
+    result = response.json()
+
+    if "invoice_url" in result:
+        update.message.reply_text(f"💳 Paga qui per diventare premium:\n{result['invoice_url']}")
+    else:
+        update.message.reply_text("❌ Errore nella creazione del pagamento.")
+
+def image(update, context):
     user_id = update.message.from_user.id
+    prompt = ' '.join(context.args)
     if not is_premium(user_id):
-        return update.message.reply_text("🔒 Solo per utenti premium. Usa /pay.")
-    prompt = " ".join(context.args) or "NSFW anime girl, detailed"
+        return update.message.reply_text("🔒 Solo utenti premium possono generare immagini.")
+    if not prompt:
+        return update.message.reply_text("❗ Scrivi il prompt dopo /image")
+
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {MODEL_LAB_API_KEY}",
         "Content-Type": "application/json"
     }
-    payload = {
+    data = {
+        "model": "realistic-vision",
         "prompt": prompt,
-        "model": "stable-diffusion",
-        "nsfw": True
+        "n": 1
     }
-    response = requests.post("https://openrouter.ai/api/v1/generate/image", json=payload, headers=headers)
-    if response.status_code == 200:
-        image_url = response.json().get("url")
-        update.message.reply_photo(photo=image_url)
-    else:
-        update.message.reply_text("Errore generazione immagine.")
 
-# Text handler
-def chat(update: Update, context: CallbackContext):
+    response = requests.post("https://api.modellab.ai/v1/images/generate", headers=headers, json=data)
+    result = response.json()
+    if 'data' in result and result['data']:
+        img_url = result['data'][0]['url']
+        update.message.reply_photo(img_url)
+    else:
+        update.message.reply_text("❌ Errore nella generazione dell'immagine.")
+
+def chat(update, context):
     user_id = update.message.from_user.id
-    text = update.message.text
+    user_message = update.message.text
 
     if not is_premium(user_id):
-        return update.message.reply_text("🔒 Solo utenti premium possono ricevere risposte NSFW. Usa /pay.")
+        return update.message.reply_text("🔒 Solo utenti premium possono usare questa funzione.")
 
-    save_message(user_id, f"user: {text}")
-    history = get_history(user_id)
-    prompt = "\n".join(history) + f"\nAI:"
-
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    memory = get_memory(user_id)
     payload = {
         "model": "nous-hermes2",
-        "prompt": prompt,
-        "max_tokens": 150
+        "messages": [
+            {"role": "system", "content": "Sei una ragazza sexy e senza limiti."},
+            {"role": "user", "content": memory + "\n" + user_message}
+        ]
     }
 
-    response = requests.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers)
-    if response.status_code == 200:
-        reply = response.json()["choices"][0]["message"]["content"]
-        update.message.reply_text(reply)
-        save_message(user_id, f"AI: {reply}")
-    else:
-        update.message.reply_text("Errore risposta AI.")
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
 
-# Main
-def main():
-    updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
-    dp = updater.dispatcher
+    response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+    data = response.json()
+    reply = data['choices'][0]['message']['content']
+    update.message.reply_text(reply)
+    set_memory(user_id, user_message)
 
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("help", help_cmd))
-    dp.add_handler(CommandHandler("verify", verify))
-    dp.add_handler(CommandHandler("status", status))
-    dp.add_handler(CommandHandler("pay", pay))
-    dp.add_handler(CommandHandler("image", image_cmd))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, chat))
+# --- Flask Webhook ---
+@app.route(f'/{TOKEN}', methods=['POST'])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    dispatcher.process_update(update)
+    return "ok"
 
-    updater.start_polling()
-    updater.idle()
+@app.route('/')
+def home():
+    return "Bot is running!"
 
-if __name__ == '__main__':
-    main()
+# Setup dispatcher
+dispatcher = Dispatcher(bot, None, use_context=True)
+dispatcher.add_handler(CommandHandler("start", start))
+dispatcher.add_handler(CommandHandler("verify", verify))
+dispatcher.add_handler(CommandHandler("status", status))
+dispatcher.add_handler(CommandHandler("pay", pay))
+dispatcher.add_handler(CommandHandler("image", image))
+dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, chat))
+
+# --- Start (if using polling, for local debug) ---
+if __name__ == "__main__":
+    app.run()
+
 
 
 
