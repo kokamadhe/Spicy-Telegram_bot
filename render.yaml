@@ -2,6 +2,7 @@ services:
   - type: web
     name: spicy-telegram-bot
     env: python
+    pythonVersion: 3.11
     plan: free
     buildCommand: ""
     startCommand: gunicorn main:app
@@ -15,6 +16,6 @@ services:
       - key: NOWPAYMENTS_API_KEY
         fromSecret: NOWPAYMENTS_API_KEY
       - key:BOT_DOMAIN
-        fromSecret: BOT_DOMAIN
+        fromSecret: BOT_DOMAIN 
 
 
