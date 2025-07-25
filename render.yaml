@@ -12,11 +12,9 @@ services:
         fromSecret: OPENROUTER_API_KEY
       - key: MODEL_LAB_API_KEY
         fromSecret: MODEL_LAB_API_KEY
-      - key: STRIPE_SECRET_KEY
-        fromSecret: STRIPE_SECRET_KEY
-      - key: STRIPE_WEBHOOK_SECRET
-        fromSecret: STRIPE_WEBHOOK_SECRET
-      - key: STRIPE_PRICE_ID
-        fromSecret: STRIPE_PRICE_ID
+      - key: NOWPAYMENTS_API_KEY
+        fromSecret: NOWPAYMENTS_API_KEY
+      - key:BOT_DOMAIN
+        fromSecret: BOT_DOMAIN
 
 
