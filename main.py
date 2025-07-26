@@ -95,7 +95,7 @@ def handle_message(update, context):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "nous-hermes2",
+        "model": "nousresearch/nous-hermes-2-mixtral-8x7b-dpo",
         "messages": [{"role": "user", "content": text}]
     }
     res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
@@ -119,6 +119,7 @@ dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
 # Gunicorn app entry
 if __name__ == "__main__":
     app.run()
+    
 
 
 
