@@ -2,6 +2,7 @@ services:
   - type: web
     name: spicy-telegram-bot
     env: python
+    python version:3.11.9
     plan: free
     buildCommand: ""
     startCommand: gunicorn main:app
