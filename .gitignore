@@ -1,4 +1,3 @@
 .env
 users.db
-premium_users.json
-__pycache__/
+
