@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "spicy-telegram-bot"
+version = "0.1.0"
+description = "Spicy Telegram Bot"
+authors = ["Your Name <you@example.com>"]
+packages = [{ include = "app" }]
+
+[tool.poetry.dependencies]
+python = "3.11.9"
+Flask = "*"
+python-telegram-bot = "13.15"
+gunicorn = "*"
+requests = "*"
+python-dotenv = "*"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
