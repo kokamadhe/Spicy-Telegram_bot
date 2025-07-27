@@ -3,7 +3,6 @@ name = "spicy-telegram-bot"
 version = "0.1.0"
 description = "Spicy Telegram Bot"
 authors = ["Your Name <you@example.com>"]
-packages = [{ include = "app" }]
 
 [tool.poetry.dependencies]
 python = "3.11.9"
