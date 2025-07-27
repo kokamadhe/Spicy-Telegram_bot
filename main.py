@@ -39,7 +39,7 @@ def is_premium(user_id):
 def pay(update, context):
     user_id = update.effective_user.id
     payload = {
-        "price_amount": 10,
+        "price_amount": 15,
         "price_currency": "USD",
         "pay_currency": "USDTTRC20",
         "ipn_callback_url": "https://nowpayments.io",  # not mandatory
